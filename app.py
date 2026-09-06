@@ -8,9 +8,17 @@ import math
 from flask import Flask, render_template, request
 
 from calculators import aero_drag, braking, power_to_weight_ratio, rpm_calculator
-from data.vehicle_database import cars
+from database.mongo import cars_collection
 
 app = Flask(__name__)
+
+def get_all_cars():
+    """Get all vehicle names from MongoDB."""
+    return sorted(
+        car["identity"]["name"]
+        for car in cars_collection.find({}, {"identity.name": 1, "_id": 0})
+        if "identity" in car and "name" in car["identity"]
+    )
 
 GITHUB_REPO = "https://github.com/tsiri1612/Vehicle-Dynamics-Calculator"
 
@@ -148,31 +156,73 @@ def aero_drag_view():
         }
         try:
             speed_kmh = float(form["speed"])
+
             if speed_kmh < 0:
                 raise ValueError("Speed cannot be negative.")
-            found = aero_drag.find_vehicle(form["name"])
-            if found:
-                name, cd, area = found
+
+            vehicle = cars_collection.find_one(
+                {"identity.name": form["name"]},
+                {"identity.name": 1, "aerodynamics": 1}
+            )
+
+            if vehicle:
+                name = vehicle["identity"]["name"]
+
+                aerodynamics = vehicle.get("aerodynamics", {})
+
+                cd = aerodynamics.get("cd")
+                area = aerodynamics.get("frontal_area_m2")
+
+                if cd is None or area is None:
+                    raise ValueError(
+                        "This vehicle does not have aerodynamic data — "
+                        "enter Cd and frontal area manually."
+                    )
+
             else:
                 if not form["cd"] or not form["area"]:
-                    raise ValueError("Vehicle not in the database — enter Cd and frontal area manually.")
+                    raise ValueError(
+                        "Vehicle not in the database — "
+                        "enter Cd and frontal area manually."
+                    )
+
                 cd = float(form["cd"])
                 area = float(form["area"])
                 name = form["name"] or "Custom vehicle"
-            if cd <= 0 or area <= 0:
-                raise ValueError("Cd and frontal area must be greater than zero.")
-            drag_force, drag_power, _ = aero_drag.calculate_drag(speed_kmh, cd, area)
+
+                if cd <= 0 or area <= 0:
+                    raise ValueError(
+                        "Cd and frontal area must be greater than zero."
+                    )
+
+            drag_force, drag_power, _ = aero_drag.calculate_drag(
+                speed_kmh, cd, area
+            )
+
             results = {
                 "vehicle": f"{name} · Cd {cd} · {area} m²",
                 "primary_value": f"{drag_force:,.2f}",
                 "primary_unit": "N",
                 "primary_label": "Aerodynamic drag force",
                 "rows": [
-                    {"label": "Speed", "value": f"{speed_kmh:,.2f}", "unit": "km/h"},
-                    {"label": "Aerodynamic drag force", "value": f"{drag_force:,.2f}", "unit": "N"},
-                    {"label": "Drag power", "value": f"{drag_power:,.2f}", "unit": "hp"},
+                    {
+                        "label": "Speed",
+                        "value": f"{speed_kmh:,.2f}",
+                        "unit": "km/h"
+                    },
+                    {
+                        "label": "Aerodynamic drag force",
+                        "value": f"{drag_force:,.2f}",
+                        "unit": "N"
+                    },
+                    {
+                        "label": "Drag power",
+                        "value": f"{drag_power:,.2f}",
+                        "unit": "hp"
+                    },
                 ],
             }
+
         except (ValueError, KeyError) as exc:
             error = str(exc) or "Please check your inputs."
 
@@ -181,7 +231,7 @@ def aero_drag_view():
         results=results,
         error=error,
         form=form,
-        cars=sorted(cars.keys()),
+        cars=get_all_cars(),
         github=GITHUB_REPO,
         source=github_file("calculators/aero_drag.py"),
     )
@@ -306,13 +356,14 @@ def rpm_view():
             error = str(exc) or "Please check your inputs."
 
     return render_template(
-        "rpm.html",
-        results=results,
-        error=error,
-        form=form,
-        github=GITHUB_REPO,
-        source=github_file("calculators/rpm_calculator.py"),
-    )
+    "aero_drag.html",
+    results=results,
+    error=error,
+    form=form,
+    cars=get_all_cars(),
+    github=GITHUB_REPO,
+    source=github_file("calculators/aero_drag.py"),
+)
 
 
 if __name__ == "__main__":
